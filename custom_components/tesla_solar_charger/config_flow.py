@@ -45,6 +45,7 @@ DATA_FIELDS: frozenset[str] = frozenset(
         "battery_power_sensor",
         "battery_soc_sensor",
         "battery_power_positive_is_charging",
+        "vehicle_soc_sensor",
     }
 )
 
@@ -103,6 +104,10 @@ def _validate_user_input(
         if not _validate_battery_soc_sensor(hass, battery_soc):
             errors["battery_soc_sensor"] = "invalid_battery_soc_unit"
 
+    vehicle_soc = user_input.get("vehicle_soc_sensor") or None
+    if vehicle_soc and not _validate_battery_soc_sensor(hass, vehicle_soc):
+        errors["vehicle_soc_sensor"] = "invalid_vehicle_soc_unit"
+
     return errors
 
 
@@ -152,6 +157,12 @@ def _bindings_schema(defaults: dict[str, Any]) -> dict[Any, Any]:
             default=defaults.get("charging_state_sensor"),
         ): selector.EntitySelector(
             selector.EntitySelectorConfig(domain="sensor")
+        ),
+        vol.Optional(
+            "vehicle_soc_sensor",
+            description={"suggested_value": defaults.get("vehicle_soc_sensor")},
+        ): selector.EntitySelector(
+            selector.EntitySelectorConfig(domain="sensor", device_class="battery")
         ),
         vol.Required(
             "voltage",

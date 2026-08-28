@@ -735,3 +735,148 @@ class TestBatteryAwarenessConfigFlow:
         assert saved_data["battery_soc_sensor"] == "sensor.battery_soc"
         assert saved_data["battery_power_positive_is_charging"] is False
 
+
+def _valid_vehicle_soc_state(entity_id: str) -> State | None:
+    """Valid power sensors plus a vehicle SOC sensor in %."""
+    matrix = {
+        "sensor.solar_production": ("3000", "W"),
+        "sensor.home_consumption": ("1500", "W"),
+        "sensor.tesla_battery": ("42", "%"),
+    }
+    if entity_id in matrix:
+        value, unit = matrix[entity_id]
+        return State(entity_id, value, {"unit_of_measurement": unit})
+    return None
+
+
+class TestVehicleSocConfigFlow:
+    """Optional vehicle SOC sensor binding for the time-window SOC cap."""
+
+    @pytest.fixture
+    def flow(self, mock_hass: MagicMock) -> TeslaSolarChargerConfigFlow:
+        flow = TeslaSolarChargerConfigFlow()
+        flow.hass = mock_hass
+        return flow
+
+    @pytest.fixture
+    def options_flow(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerOptionsFlow:
+        flow = TeslaSolarChargerOptionsFlow()
+        flow.hass = mock_hass
+        flow.handler = mock_config_entry.entry_id
+        mock_hass.config_entries.async_get_known_entry = MagicMock(
+            return_value=mock_config_entry
+        )
+        return flow
+
+    @pytest.mark.asyncio
+    async def test_accepts_missing_vehicle_soc_sensor(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "3000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert "vehicle_soc_sensor" not in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_accepts_percent_vehicle_soc_sensor(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        mock_hass.states.get = MagicMock(side_effect=_valid_vehicle_soc_state)
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "vehicle_soc_sensor": "sensor.tesla_battery",
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"]["vehicle_soc_sensor"] == "sensor.tesla_battery"
+
+    @pytest.mark.asyncio
+    async def test_rejects_vehicle_soc_sensor_with_wrong_unit(
+        self, flow: TeslaSolarChargerConfigFlow, mock_hass: MagicMock
+    ):
+        def get_state(entity_id: str):
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "3000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "1500", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_battery":
+                return State(entity_id, "42", {"unit_of_measurement": "kWh"})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "vehicle_soc_sensor": "sensor.tesla_battery",
+        }
+
+        result = await flow.async_step_user(user_input=user_input)
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"].get("vehicle_soc_sensor") == "invalid_vehicle_soc_unit"
+
+    @pytest.mark.asyncio
+    async def test_options_flow_saves_vehicle_soc_binding(
+        self,
+        options_flow: TeslaSolarChargerOptionsFlow,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        mock_config_entry.options = {
+            **mock_config_entry.options,
+            "time_window_soc_limit_pct": 50,
+        }
+        mock_hass.states.get = MagicMock(side_effect=_valid_vehicle_soc_state)
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+            "vehicle_soc_sensor": "sensor.tesla_battery",
+        }
+
+        await options_flow.async_step_init(user_input=user_input)
+
+        call = mock_hass.config_entries.async_update_entry.call_args
+        saved_data = call.kwargs["data"]
+        saved_options = call.kwargs["options"]
+        assert saved_data["vehicle_soc_sensor"] == "sensor.tesla_battery"
+        assert saved_options["time_window_soc_limit_pct"] == 50
+

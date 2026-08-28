@@ -24,6 +24,12 @@ DEFAULT_RESTART_DELAY_SECONDS = 900  # 15 minutes
 DEFAULT_TIME_WINDOW_ENABLED = False
 DEFAULT_TIME_WINDOW_START = "23:00:00"
 DEFAULT_TIME_WINDOW_END = "07:00:00"
+# Optional vehicle-SOC cap for TIME_WINDOW only. 100% is "no cap" until the
+# user lowers it. The NumberEntity is only created when a vehicle SOC sensor
+# is bound in the config flow.
+DEFAULT_TIME_WINDOW_SOC_LIMIT_PCT = 100
+TIME_WINDOW_SOC_LIMIT_MIN = 0
+TIME_WINDOW_SOC_LIMIT_MAX = 100
 
 # Voltage limits
 VOLTAGE_MIN = 100

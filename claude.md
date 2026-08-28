@@ -172,7 +172,15 @@ These rules govern *how* work is done in this repo. They override default behavi
   → `FORCED` (Charge Now wins) → `IDLE` if unplugged → `TIME_WINDOW` → normal
   solar tracking. The window bypasses the 6/15-minute hysteresis timers, since
   a lockout must not eat into a limited cheap-rate period, and battery priority
-  does not gate it (cheap grid power is not solar). **Leaving** the window does
+  does not gate it (cheap grid power is not solar). An optional `vehicle_soc_sensor`
+  binding plus a dashboard **Time Window SOC Limit** (default 100%) can stop
+  overnight charging when vehicle SoC is at/above the limit; Solar Only,
+  Solar + Grid, and Charge Now are unaffected. If the sensor is bound but
+  unread (`unavailable` / `unknown` / unparseable), TIME_WINDOW fail-closes
+  (amps 0, switch off) — do not buy grid power without a trustworthy reading.
+  The controller stays in `TIME_WINDOW` while capped; charging resumes if the
+  window is still (or again) active and SoC has dropped below the limit. The
+  vehicle charge-limit number is **not** written. **Leaving** the window does
   *not* serve out the stop timer: that timer exists to ride out cloud dips, and
   waiting would simply charge on at peak rates — so the controller re-evaluates
   excess immediately and either hands over to `TRACKING` or stops.
@@ -208,6 +216,9 @@ These rules govern *how* work is done in this repo. They override default behavi
   configured or if either battery sensor is unavailable.
 - `battery_soc_pct` — home-battery state of charge, percentage. `None`
   if not configured or if either battery sensor is unavailable.
+- `vehicle_soc_pct` — vehicle battery percentage from the optional
+  `vehicle_soc_sensor`. `None` if not configured or unread. Used only
+  to cap TIME_WINDOW charging.
 - `battery_priority_active` — true when this cycle's `excess_w` was
   reduced (or zeroed) by battery-priority gating.
 
@@ -253,9 +264,10 @@ mode change or plug events.
 Config/options flow (`config_flow.py`) edits **entity bindings only**:
 `production_sensor`, `consumption_sensors`, `consumption_excludes_charging`,
 `amps_number`, `charging_switch`, `charging_state_sensor`, `voltage`,
-`name`, plus the optional battery sensors and sign toggle. These are
-saved to `entry.data`; the options flow preserves `entry.options`
-verbatim on save (`OPTIONS_FIELDS` is empty by design).
+`name`, plus the optional battery sensors and sign toggle, and the
+optional `vehicle_soc_sensor` (vehicle battery %, for the time-window
+SOC cap). These are saved to `entry.data`; the options flow preserves
+`entry.options` verbatim on save (`OPTIONS_FIELDS` is empty by design).
 
 Every runtime tunable lives on a dashboard control that writes directly
 to `entry.options`:
@@ -264,7 +276,8 @@ to `entry.options`:
 - `time.py` — Charge Window Start / End (`TimeEntity`, persisted to options).
 - `number.py` — Min Amps, Max Amps, Margin (W), Update Interval (s),
   Minimum Solar Generation (W), Stop Delay (s), Restart Cooldown (s),
-  Battery Priority Charge Limit (%; only when battery configured).
+  Battery Priority Charge Limit (%; only when battery configured),
+  Time Window SOC Limit (%; only when `vehicle_soc_sensor` is configured).
 - `select.py` — Mode (always), Battery Priority Style (`hard_cutoff` /
   `graduated`; only when battery configured).
 

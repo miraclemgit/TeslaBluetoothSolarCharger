@@ -12,6 +12,7 @@
           "amps_number": "Charging Amps Number Entity",
           "charging_switch": "Charging Switch Entity",
           "charging_state_sensor": "Charging State Sensor",
+          "vehicle_soc_sensor": "Vehicle Battery Level Sensor (optional)",
           "voltage": "Grid Voltage",
           "battery_power_sensor": "Home Battery Power Sensor (optional)",
           "battery_soc_sensor": "Home Battery State of Charge Sensor (optional)",
@@ -25,6 +26,7 @@
           "amps_number": "Select the number entity from your ESPHome Tesla BLE proxy that controls charging amperage. This is typically named something like 'Charging Amps' or 'Charge Current Limit'.",
           "charging_switch": "Select the switch entity from your ESPHome Tesla BLE proxy that starts/stops charging. This is typically named 'Charging' or 'Charge Enable'.",
           "charging_state_sensor": "Select the sensor showing IEC 61851 charging state from your ESPHome BLE proxy. Values like 'Charging', 'Stopped', 'Disconnected'. Used to detect if car is plugged in.",
+          "vehicle_soc_sensor": "Optional. The ESPHome Tesla BLE proxy's vehicle battery percentage sensor. Required to cap overnight/time-window charging at a dedicated SoC. Must report in %.",
           "voltage": "Your local grid voltage. Use 230V for Europe/Australia, 240V for UK, or 120V for North America. Used to calculate watts from amps.",
           "battery_power_sensor": "Optional. Sensor reporting home-battery instantaneous power in W or kW. Required together with the SoC sensor to enable battery-aware charging.",
           "battery_soc_sensor": "Optional. Sensor reporting home-battery state of charge as a percentage. Required together with the power sensor.",
@@ -36,7 +38,8 @@
       "invalid_power_unit": "Selected sensor must have unit_of_measurement of W or kW. Please select a power sensor.",
       "no_consumption_sensors": "At least one consumption sensor is required to calculate excess solar power.",
       "battery_pair_incomplete": "Both the battery power sensor and the battery state of charge sensor must be selected, or neither.",
-      "invalid_battery_soc_unit": "The battery state of charge sensor must have unit_of_measurement of %."
+      "invalid_battery_soc_unit": "The battery state of charge sensor must have unit_of_measurement of %.",
+      "invalid_vehicle_soc_unit": "The vehicle battery level sensor must have unit_of_measurement of %."
     },
     "abort": {
       "already_configured": "This integration is already configured. Use the Options button to modify settings."
@@ -55,6 +58,7 @@
           "amps_number": "Charging Amps Number Entity",
           "charging_switch": "Charging Switch Entity",
           "charging_state_sensor": "Charging State Sensor",
+          "vehicle_soc_sensor": "Vehicle Battery Level Sensor (optional)",
           "voltage": "Grid Voltage",
           "battery_power_sensor": "Home Battery Power Sensor (optional)",
           "battery_soc_sensor": "Home Battery State of Charge Sensor (optional)",
@@ -68,6 +72,7 @@
           "amps_number": "The ESPHome BLE proxy's charging amps number entity.",
           "charging_switch": "The ESPHome BLE proxy's charging switch entity.",
           "charging_state_sensor": "The IEC 61851 state sensor from the BLE proxy.",
+          "vehicle_soc_sensor": "Optional. The ESPHome Tesla BLE proxy's vehicle battery percentage sensor. Required to cap overnight/time-window charging at a dedicated SoC. Must report in %.",
           "voltage": "Your local grid voltage (230V EU, 240V UK, 120V US). Used for watts/amps conversion.",
           "battery_power_sensor": "Optional. Sensor reporting home-battery instantaneous power in W or kW. Required together with the SoC sensor.",
           "battery_soc_sensor": "Optional. Sensor reporting home-battery state of charge as a percentage. Required together with the power sensor.",
@@ -119,6 +124,9 @@
       },
       "battery_priority_charge_limit_pct": {
         "name": "Battery Priority Charge Limit"
+      },
+      "time_window_soc_limit_pct": {
+        "name": "Time Window SOC Limit"
       }
     },
     "switch": {

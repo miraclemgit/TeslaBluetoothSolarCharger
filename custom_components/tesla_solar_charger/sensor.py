@@ -278,6 +278,7 @@ class TeslaSolarChargerDiagnosticsSensor(TeslaSolarChargerBaseSensor):
             "battery_priority_active": data.get("battery_priority_active"),
             "excess_pre_battery_w": data.get("excess_pre_battery_w"),
             "battery_deduction_w": data.get("battery_deduction_w"),
+            "vehicle_soc_pct": data.get("vehicle_soc_pct"),
 
             # Configuration
             "config_production_sensor": entry_data.get("production_sensor"),
@@ -299,6 +300,10 @@ class TeslaSolarChargerDiagnosticsSensor(TeslaSolarChargerBaseSensor):
             ),
             "config_battery_priority_style": entry_options.get(
                 "battery_priority_style"
+            ),
+            "config_vehicle_soc_sensor": entry_data.get("vehicle_soc_sensor"),
+            "config_time_window_soc_limit_pct": entry_options.get(
+                "time_window_soc_limit_pct"
             ),
         }
 
