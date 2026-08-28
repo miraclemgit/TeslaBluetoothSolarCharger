@@ -266,7 +266,9 @@ class TeslaSolarChargerOptionsFlow(OptionsFlow):
                     options=new_options,
                     title=user_input.get("name", DEFAULT_NAME),
                 )
-                return self.async_create_entry(title="", data={})
+                # HA replaces entry.options with this data after the flow
+                # finishes. Returning {} would wipe dashboard tunables.
+                return self.async_create_entry(title="", data=new_options)
 
         # Merge current data with options for form defaults
         defaults = {**self.config_entry.data, **self.config_entry.options}
