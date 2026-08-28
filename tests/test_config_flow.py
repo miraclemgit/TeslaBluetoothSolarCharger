@@ -353,6 +353,50 @@ class TestOptionsFlow:
         assert saved_options["margin_w"] == 250
 
     @pytest.mark.asyncio
+    async def test_options_create_entry_returns_existing_options(
+        self,
+        options_flow: TeslaSolarChargerOptionsFlow,
+        mock_config_entry: ConfigEntry,
+    ):
+        """HA replaces entry.options with async_create_entry's data.
+
+        Returning {} would wipe dashboard tunables on Configure even if
+        async_update_entry was called with the preserved options first.
+        """
+        mock_config_entry.options = {
+            **mock_config_entry.options,
+            "min_amps": 8,
+            "max_amps": 24,
+            "margin_w": 250,
+            "time_window_enabled": True,
+            "time_window_start": "23:00:00",
+            "time_window_end": "07:00:00",
+        }
+
+        user_input = {
+            "name": "Tesla",
+            "production_sensor": "sensor.solar_production",
+            "consumption_sensors": ["sensor.home_consumption"],
+            "consumption_excludes_charging": False,
+            "amps_number": "number.tesla_charging_amps",
+            "charging_switch": "switch.tesla_charging",
+            "charging_state_sensor": "sensor.tesla_charging_state",
+            "voltage": 230,
+        }
+
+        result = await options_flow.async_step_init(user_input=user_input)
+
+        assert result["type"] == FlowResultType.CREATE_ENTRY
+        assert result["data"]["min_amps"] == 8
+        assert result["data"]["max_amps"] == 24
+        assert result["data"]["margin_w"] == 250
+        assert result["data"]["time_window_enabled"] is True
+        assert result["data"]["time_window_start"] == "23:00:00"
+        assert result["data"]["time_window_end"] == "07:00:00"
+        assert result["data"]["update_interval_seconds"] == 30
+        assert "production_sensor" not in result["data"]
+
+    @pytest.mark.asyncio
     async def test_options_validates_power_sensors(
         self, options_flow: TeslaSolarChargerOptionsFlow, mock_hass: MagicMock
     ):
