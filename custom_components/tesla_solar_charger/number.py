@@ -24,12 +24,15 @@ from .const import (
     DEFAULT_MIN_SOLAR_GENERATION_W,
     DEFAULT_RESTART_DELAY_SECONDS,
     DEFAULT_STOP_DELAY_SECONDS,
+    DEFAULT_TIME_WINDOW_SOC_LIMIT_PCT,
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DOMAIN,
     MARGIN_MAX,
     MARGIN_MIN,
     MIN_SOLAR_GENERATION_MAX,
     MIN_SOLAR_GENERATION_MIN,
+    TIME_WINDOW_SOC_LIMIT_MAX,
+    TIME_WINDOW_SOC_LIMIT_MIN,
     UPDATE_INTERVAL_MAX,
     UPDATE_INTERVAL_MIN,
 )
@@ -54,6 +57,8 @@ async def async_setup_entry(
     ]
     if entry.data.get("battery_power_sensor") and entry.data.get("battery_soc_sensor"):
         entities.append(TeslaSolarChargerBatteryPriorityLimitNumber(coordinator, entry))
+    if entry.data.get("vehicle_soc_sensor"):
+        entities.append(TeslaSolarChargerTimeWindowSocLimitNumber(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -314,6 +319,34 @@ class TeslaSolarChargerBatteryPriorityLimitNumber(TeslaSolarChargerBaseNumber):
         return self._entry.options.get(
             "battery_priority_charge_limit_pct",
             DEFAULT_BATTERY_PRIORITY_CHARGE_LIMIT_PCT,
+        )
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._async_update_option(value)
+
+
+class TeslaSolarChargerTimeWindowSocLimitNumber(TeslaSolarChargerBaseNumber):
+    """Vehicle SoC at/above which TIME_WINDOW charging stops."""
+
+    _attr_translation_key = "time_window_soc_limit_pct"
+    _attr_native_unit_of_measurement = "%"
+    _attr_native_min_value = TIME_WINDOW_SOC_LIMIT_MIN
+    _attr_native_max_value = TIME_WINDOW_SOC_LIMIT_MAX
+    _attr_native_step = 1
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        super().__init__(coordinator, entry, "time_window_soc_limit_pct")
+
+    @property
+    def native_value(self) -> int:
+        return self._entry.options.get(
+            "time_window_soc_limit_pct",
+            DEFAULT_TIME_WINDOW_SOC_LIMIT_PCT,
         )
 
     async def async_set_native_value(self, value: float) -> None:

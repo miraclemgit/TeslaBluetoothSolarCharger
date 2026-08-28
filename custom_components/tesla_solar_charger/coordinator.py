@@ -28,6 +28,7 @@ from .const import (
     DEFAULT_STOP_DELAY_SECONDS,
     DEFAULT_TIME_WINDOW_ENABLED,
     DEFAULT_TIME_WINDOW_END,
+    DEFAULT_TIME_WINDOW_SOC_LIMIT_PCT,
     DEFAULT_TIME_WINDOW_START,
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VOLTAGE,
@@ -324,6 +325,25 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             charge_w = -charge_w
 
         return charge_w, soc_pct
+
+    def _read_vehicle_soc_pct(self) -> float | None:
+        """Read the vehicle battery percentage, if a sensor is bound.
+
+        Returns None when the sensor is unconfigured, unavailable, unknown,
+        or unparseable. TIME_WINDOW treats a bound-but-unreadable value as
+        fail-closed (do not charge).
+        """
+        entity = self.entry.data.get("vehicle_soc_sensor")
+        if not entity:
+            return None
+
+        soc_state = self.hass.states.get(entity)
+        if soc_state is None or soc_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return None
+        try:
+            return float(soc_state.state)
+        except (ValueError, TypeError):
+            return None
 
     def _apply_battery_priority(
         self, excess_w: float | None, soc_pct: float | None
@@ -807,6 +827,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Read home battery state (None pair if unconfigured/unavailable)
         battery_power_w, battery_soc_pct = self._read_battery_state()
+        vehicle_soc_pct = self._read_vehicle_soc_pct()
 
         # Compute excess (will use production_w which is 0 if unavailable),
         # then apply battery-priority gating if a battery is configured.
@@ -855,8 +876,22 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             target_amps = max_amps
             _LOGGER.debug("FORCED mode: target_amps=%d", target_amps)
         elif self._controller_state == ControllerState.TIME_WINDOW:
-            # Cheap-rate window - charge at max, ignoring solar entirely
-            target_amps = max_amps
+            # Cheap-rate window - charge at max, ignoring solar, unless the
+            # optional vehicle-SOC cap says stop (or the bound sensor is unread).
+            sensor_id = self.entry.data.get("vehicle_soc_sensor")
+            if sensor_id:
+                limit = int(
+                    self._get_config_value(
+                        "time_window_soc_limit_pct",
+                        DEFAULT_TIME_WINDOW_SOC_LIMIT_PCT,
+                    )
+                )
+                if vehicle_soc_pct is None or vehicle_soc_pct >= limit:
+                    target_amps = 0
+                else:
+                    target_amps = max_amps
+            else:
+                target_amps = max_amps
             _LOGGER.debug("TIME_WINDOW: target_amps=%d", target_amps)
         elif self._controller_state == ControllerState.TRACKING:
             if sensors_available and excess_w is not None:
@@ -878,11 +913,8 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # what was actually done (or why not) for the per-cycle debug trace.
         action_amps = "none"
         action_switch = "none"
-        if self._controller_state in (
-            ControllerState.FORCED,
-            ControllerState.TIME_WINDOW,
-        ):
-            # Charge Now / cheap-rate window - always drive amps + switch on
+        if self._controller_state == ControllerState.FORCED:
+            # Charge Now - always drive amps + switch on
             _LOGGER.debug(
                 "Sending %s commands: amps=%d, switch=on",
                 self._controller_state.value,
@@ -890,6 +922,21 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             action_amps = await self._send_amps(target_amps)
             action_switch = await self._send_switch(on=True)
+        elif self._controller_state == ControllerState.TIME_WINDOW:
+            if target_amps > 0:
+                _LOGGER.debug(
+                    "Sending time_window commands: amps=%d, switch=on",
+                    target_amps,
+                )
+                action_amps = await self._send_amps(target_amps)
+                action_switch = await self._send_switch(on=True)
+            else:
+                _LOGGER.debug(
+                    "TIME_WINDOW SOC cap or unread vehicle SOC: amps=0, switch=off"
+                )
+                if plugged_in:
+                    action_amps = await self._send_amps(0)
+                action_switch = await self._send_switch(on=False)
         elif self._controller_state == ControllerState.TRACKING:
             if target_amps > 0:
                 action_amps = await self._send_amps(target_amps)
@@ -929,6 +976,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             battery_soc_pct=battery_soc_pct,
             battery_priority_active=battery_priority_active,
             battery_deduction_w=battery_deduction_w,
+            vehicle_soc_pct=vehicle_soc_pct,
         )
 
         return self._build_data_dict(
@@ -943,6 +991,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             battery_power_w=battery_power_w,
             battery_soc_pct=battery_soc_pct,
             battery_priority_active=battery_priority_active,
+            vehicle_soc_pct=vehicle_soc_pct,
         )
 
     def _build_data_dict(
@@ -958,6 +1007,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         battery_power_w: float | None,
         battery_soc_pct: float | None,
         battery_priority_active: bool,
+        vehicle_soc_pct: float | None = None,
     ) -> dict[str, Any]:
         """Build the data dictionary returned by the coordinator."""
         return {
@@ -979,6 +1029,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "battery_power_w": battery_power_w,
             "battery_soc_pct": battery_soc_pct,
             "battery_priority_active": battery_priority_active,
+            "vehicle_soc_pct": vehicle_soc_pct,
         }
 
     def _log_cycle(
@@ -1000,6 +1051,7 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         battery_soc_pct: float | None,
         battery_priority_active: bool,
         battery_deduction_w: float,
+        vehicle_soc_pct: float | None = None,
     ) -> None:
         """Emit one parseable per-cycle DEBUG trace line (``TSC_CYCLE``).
 
@@ -1091,6 +1143,17 @@ class TeslaSolarChargerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 f"batt_soc={num(battery_soc_pct)}",
                 f"batt_prio={str(battery_priority_active).lower()}",
                 f"batt_deduct_w={num(battery_deduction_w)}",
+            ]
+        if self.entry.data.get("vehicle_soc_sensor"):
+            limit = int(
+                self._get_config_value(
+                    "time_window_soc_limit_pct",
+                    DEFAULT_TIME_WINDOW_SOC_LIMIT_PCT,
+                )
+            )
+            fields += [
+                f"veh_soc={num(vehicle_soc_pct)}",
+                f"tw_soc_limit={limit}",
             ]
 
         _LOGGER.debug("TSC_CYCLE %s", " ".join(fields))

@@ -595,6 +595,35 @@ class TestMovedTunableNumbers:
         assert number.native_max_value == 100
         assert number.native_unit_of_measurement == "%"
 
+    @pytest.mark.asyncio
+    async def test_time_window_soc_limit_number_defaults_to_100(
+        self, mock_hass: MagicMock
+    ):
+        from custom_components.tesla_solar_charger.number import (
+            TeslaSolarChargerTimeWindowSocLimitNumber,
+        )
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        coordinator.async_request_refresh = AsyncMock()
+        entry = MagicMock()
+        entry.entry_id = "test"
+        entry.options = {}
+        entry.data = {"vehicle_soc_sensor": "sensor.tesla_battery"}
+
+        number = TeslaSolarChargerTimeWindowSocLimitNumber(coordinator, entry)
+        number.hass = mock_hass
+        assert number.native_value == 100
+        assert number.native_min_value == 0
+        assert number.native_max_value == 100
+        assert number.native_unit_of_measurement == "%"
+
+        await number.async_set_native_value(50)
+        mock_hass.config_entries.async_update_entry.assert_called()
+        saved = mock_hass.config_entries.async_update_entry.call_args.kwargs["options"]
+        assert saved["time_window_soc_limit_pct"] == 50
+        coordinator.async_request_refresh.assert_called_once()
+
 
 class TestBatteryPriorityStyleSelect:
     """battery_priority_style is now a SelectEntity, not an options-flow field."""

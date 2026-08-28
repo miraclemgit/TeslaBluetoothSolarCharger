@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import State
 
 from custom_components.tesla_solar_charger.const import ControllerState, Mode
@@ -460,3 +461,301 @@ class TestTimeWindowDebugTrace:
         assert any("time_window_open" in t for t in transitions), (
             "transition into the window should record its reason"
         )
+
+
+VEHICLE_SOC_ENTITY = "sensor.tesla_battery"
+
+
+def _vehicle_states(
+    soc: str | None,
+    *,
+    iec: str = "Stopped",
+    soc_unavailable: bool = False,
+    soc_unknown: bool = False,
+):
+    """Night-time window states plus an optional vehicle SOC reading."""
+
+    def get_state(entity_id: str) -> State | None:
+        if entity_id == VEHICLE_SOC_ENTITY:
+            if soc is None:
+                return None
+            if soc_unavailable:
+                return State(
+                    entity_id, STATE_UNAVAILABLE, {"unit_of_measurement": "%"}
+                )
+            if soc_unknown:
+                return State(entity_id, STATE_UNKNOWN, {"unit_of_measurement": "%"})
+            return State(entity_id, soc, {"unit_of_measurement": "%"})
+        if entity_id == "sensor.tesla_charging_state":
+            return State(entity_id, iec, {})
+        return _night_states(entity_id)
+
+    return get_state
+
+
+def _switch_calls(mock_hass: MagicMock, service: str) -> bool:
+    return any(
+        c.args[0] == "switch" and c.args[1] == service
+        for c in mock_hass.services.async_call.call_args_list
+    )
+
+
+class TestTimeWindowSocLimit:
+    """Optional vehicle-SOC cap that applies only inside TIME_WINDOW."""
+
+    @pytest.fixture
+    def coordinator(
+        self, mock_hass: MagicMock, mock_config_entry: ConfigEntry
+    ) -> TeslaSolarChargerCoordinator:
+        mock_config_entry.options["time_window_enabled"] = True
+        mock_config_entry.options["time_window_start"] = "23:00:00"
+        mock_config_entry.options["time_window_end"] = "07:00:00"
+        mock_config_entry.options["max_amps"] = 32
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+        return coord
+
+    def _bind_vehicle_soc(
+        self, mock_config_entry: ConfigEntry, limit: int | None = None
+    ) -> None:
+        mock_config_entry.data["vehicle_soc_sensor"] = VEHICLE_SOC_ENTITY
+        if limit is not None:
+            mock_config_entry.options["time_window_soc_limit_pct"] = limit
+
+    @pytest.mark.asyncio
+    async def test_no_sensor_still_charges_at_max(
+        self, coordinator: TeslaSolarChargerCoordinator, mock_hass: MagicMock
+    ):
+        """Unconfigured vehicle SOC keeps today's behaviour: charge at max."""
+        mock_hass.states.get = MagicMock(side_effect=_night_states)
+        with _patch_now("02:00"):
+            data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TIME_WINDOW.value
+        assert data["target_amps"] == 32
+        assert data.get("vehicle_soc_pct") is None
+        assert _switch_calls(mock_hass, "turn_on")
+
+    @pytest.mark.asyncio
+    async def test_default_limit_100_charges_below(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Default 100% is no cap: SOC 80 still charges at max."""
+        self._bind_vehicle_soc(mock_config_entry)
+        mock_hass.states.get = MagicMock(side_effect=_vehicle_states("80"))
+        with _patch_now("02:00"):
+            data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TIME_WINDOW.value
+        assert data["target_amps"] == 32
+        assert data["vehicle_soc_pct"] == 80.0
+        assert _switch_calls(mock_hass, "turn_on")
+
+    @pytest.mark.asyncio
+    async def test_below_limit_charges_at_max(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        self._bind_vehicle_soc(mock_config_entry, limit=50)
+        mock_hass.states.get = MagicMock(side_effect=_vehicle_states("49"))
+        with _patch_now("02:00"):
+            data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TIME_WINDOW.value
+        assert data["target_amps"] == 32
+        assert _switch_calls(mock_hass, "turn_on")
+
+    @pytest.mark.asyncio
+    async def test_at_limit_stops_immediately(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """SOC >= limit: amps 0, switch off, stay in TIME_WINDOW."""
+        self._bind_vehicle_soc(mock_config_entry, limit=50)
+        mock_hass.states.get = MagicMock(
+            side_effect=_vehicle_states("50", iec="Charging")
+        )
+        with _patch_now("02:00"):
+            data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TIME_WINDOW.value
+        assert data["target_amps"] == 0
+        assert _switch_calls(mock_hass, "turn_off")
+        assert not _switch_calls(mock_hass, "turn_on")
+
+    @pytest.mark.asyncio
+    async def test_resumes_when_soc_drops_below_limit(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """No hysteresis: once SOC falls below the limit, window charging resumes."""
+        self._bind_vehicle_soc(mock_config_entry, limit=50)
+
+        mock_hass.states.get = MagicMock(
+            side_effect=_vehicle_states("60", iec="Charging")
+        )
+        with _patch_now("02:00"):
+            stopped = await coordinator._async_update_data()
+        assert stopped["target_amps"] == 0
+        assert stopped["controller_state"] == ControllerState.TIME_WINDOW.value
+
+        mock_hass.services.async_call.reset_mock()
+        mock_hass.states.get = MagicMock(side_effect=_vehicle_states("49"))
+        with _patch_now("02:05"):
+            resumed = await coordinator._async_update_data()
+
+        assert resumed["controller_state"] == ControllerState.TIME_WINDOW.value
+        assert resumed["target_amps"] == 32
+        assert _switch_calls(mock_hass, "turn_on")
+
+    @pytest.mark.parametrize(
+        "soc_kwargs",
+        [
+            {"soc": None},
+            {"soc": "42", "soc_unavailable": True},
+            {"soc": "42", "soc_unknown": True},
+            {"soc": "not-a-number"},
+        ],
+        ids=["missing", "unavailable", "unknown", "unparseable"],
+    )
+    @pytest.mark.asyncio
+    async def test_unread_soc_fails_closed(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+        soc_kwargs: dict,
+    ):
+        """Bound but unreadable SOC must not buy grid power."""
+        self._bind_vehicle_soc(mock_config_entry, limit=50)
+        mock_hass.states.get = MagicMock(
+            side_effect=_vehicle_states(iec="Charging", **soc_kwargs)
+        )
+        with _patch_now("02:00"):
+            data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TIME_WINDOW.value
+        assert data["target_amps"] == 0
+        assert data["vehicle_soc_pct"] is None
+        assert _switch_calls(mock_hass, "turn_off")
+        assert not _switch_calls(mock_hass, "turn_on")
+
+    @pytest.mark.asyncio
+    async def test_charge_now_ignores_vehicle_soc_limit(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        self._bind_vehicle_soc(mock_config_entry, limit=50)
+        coordinator._mode = Mode.CHARGE_NOW
+        mock_hass.states.get = MagicMock(side_effect=_vehicle_states("80"))
+        with _patch_now("02:00"):
+            data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.FORCED.value
+        assert data["target_amps"] == 32
+        assert _switch_calls(mock_hass, "turn_on")
+
+    @pytest.mark.asyncio
+    async def test_solar_tracking_outside_window_ignores_limit(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Daytime solar tracking is not capped by the time-window SOC limit."""
+        self._bind_vehicle_soc(mock_config_entry, limit=50)
+
+        def get_state(entity_id: str) -> State | None:
+            if entity_id == VEHICLE_SOC_ENTITY:
+                return State(entity_id, "80", {"unit_of_measurement": "%"})
+            if entity_id == "sensor.solar_production":
+                return State(entity_id, "4000", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.home_consumption":
+                return State(entity_id, "800", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.tesla_charging_state":
+                return State(entity_id, "Stopped", {})
+            return None
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        with _patch_now("12:00"):
+            data = await coordinator._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TRACKING.value
+        assert data["target_amps"] > 0
+        assert data["time_window_active"] is False
+
+    @pytest.mark.asyncio
+    async def test_home_battery_priority_still_does_not_block_window(
+        self,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+    ):
+        """Home-battery priority stays solar-only; vehicle SOC below limit charges."""
+        mock_config_entry.options["time_window_enabled"] = True
+        mock_config_entry.options["time_window_start"] = "23:00:00"
+        mock_config_entry.options["time_window_end"] = "07:00:00"
+        mock_config_entry.options["max_amps"] = 32
+        mock_config_entry.data["battery_power_sensor"] = "sensor.battery_power"
+        mock_config_entry.data["battery_soc_sensor"] = "sensor.battery_soc"
+        mock_config_entry.data["battery_power_positive_is_charging"] = True
+        mock_config_entry.data["vehicle_soc_sensor"] = VEHICLE_SOC_ENTITY
+        mock_config_entry.options["battery_priority_charge_limit_pct"] = 80
+        mock_config_entry.options["time_window_soc_limit_pct"] = 50
+
+        coord = TeslaSolarChargerCoordinator(mock_hass, mock_config_entry)
+        coord._mode = Mode.SOLAR_ONLY
+        coord._master_enabled = True
+        coord._was_plugged_in = True
+
+        def get_state(entity_id: str) -> State | None:
+            if entity_id == "sensor.battery_power":
+                return State(entity_id, "0", {"unit_of_measurement": "W"})
+            if entity_id == "sensor.battery_soc":
+                return State(entity_id, "40", {"unit_of_measurement": "%"})
+            if entity_id == VEHICLE_SOC_ENTITY:
+                return State(entity_id, "40", {"unit_of_measurement": "%"})
+            return _night_states(entity_id)
+
+        mock_hass.states.get = MagicMock(side_effect=get_state)
+        with _patch_now("02:00"):
+            data = await coord._async_update_data()
+
+        assert data["controller_state"] == ControllerState.TIME_WINDOW.value
+        assert data["target_amps"] == 32
+
+    @pytest.mark.asyncio
+    async def test_cycle_trace_reports_vehicle_soc(
+        self,
+        coordinator: TeslaSolarChargerCoordinator,
+        mock_hass: MagicMock,
+        mock_config_entry: ConfigEntry,
+        caplog,
+    ):
+        import logging
+
+        self._bind_vehicle_soc(mock_config_entry, limit=50)
+        mock_hass.states.get = MagicMock(side_effect=_vehicle_states("42"))
+        caplog.set_level(
+            logging.DEBUG,
+            logger="custom_components.tesla_solar_charger.coordinator",
+        )
+        with _patch_now("02:00"):
+            await coordinator._async_update_data()
+
+        lines = [r.getMessage() for r in caplog.records if "TSC_CYCLE" in r.getMessage()]
+        assert lines, "expected a TSC_CYCLE line"
+        assert "veh_soc=42" in lines[-1]
+        assert "tw_soc_limit=50" in lines[-1]

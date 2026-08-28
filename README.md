@@ -72,6 +72,8 @@ versions may not have picked it up yet. Add it as a custom repository instead:
 
 5. (Optional) **Home Battery Awareness** — if you have a home battery (Powerwall, Sungrow, etc.), provide both a battery power sensor (W or kW) and a battery state-of-charge sensor (%). Use the *Battery power: positive value means charging* toggle to match your sensor's sign convention. Both sensors must be set together, or neither.
 
+6. (Optional) **Vehicle Battery Level Sensor** — the ESPHome Tesla BLE proxy's vehicle battery `%` sensor. Required if you want a dedicated SoC cap for overnight/time-window charging (solar and Charge Now still follow the car's own charge limit). Must report in `%`.
+
 ### Tunables
 
 All runtime tunables live on the integration's device page as editable
@@ -90,6 +92,7 @@ edits the entity bindings above.
 | Restart Cooldown | Number (s) | 900 | Time in COOLDOWN before TRACKING can resume (15 min). Reduces contactor wear. |
 | Battery Priority Charge Limit | Number (%) | 80 | *(only when battery configured)* Home-battery SoC at/above which excess goes to EV. ChargeHQ recommends 60–90 %. |
 | Battery Priority Style | Select | Hard cutoff | *(only when battery configured)* `Hard cutoff` gates EV on/off at the limit (matches ChargeHQ docs). `Graduated` tapers EV deduction in 5 % bands above the limit (gentler, fewer contactor cycles). |
+| Time Window SOC Limit | Number (%) | 100 | *(only when a vehicle battery sensor is configured)* Stop time-window/grid charging at this vehicle SoC. 100% is no cap. Solar and Charge Now are unaffected. |
 
 ## Modes
 
@@ -118,6 +121,7 @@ Controls (on the device page, under Configuration):
 | Time Window Charging | Off | Master toggle for the feature. Persists across restarts. |
 | Charge Window Start | 23:00 | Local time the window opens (inclusive). |
 | Charge Window End | 07:00 | Local time the window closes (exclusive). |
+| Time Window SOC Limit | 100% | *(only when a vehicle battery sensor is configured)* Stop overnight charging at this vehicle SoC. |
 
 Windows that span midnight work as expected — `23:00` → `07:00` is active all night.
 
@@ -127,6 +131,7 @@ Behaviour details:
 - **Precedence** — `Mode: Off` and turning **Master Enable** off both suppress the window (they're "hands off the car" switches). `Charge Now` takes priority over it. If the car isn't plugged in, nothing happens.
 - **No waiting at the start** — the 15-minute restart cooldown is bypassed, so a lockout can't eat into a limited cheap-rate period.
 - **Battery priority doesn't apply** — home-battery priority is about allocating *solar*; cheap grid power isn't gated by it.
+- **Optional vehicle SoC cap** — if you bind the BLE proxy's battery `%` sensor, time-window charging stops immediately when vehicle SoC is at or above **Time Window SOC Limit**. The controller stays in `TIME_WINDOW` and will resume if SoC later drops below the limit. A bound but unreadable sensor fail-closes (does not charge). Solar tracking and Charge Now ignore this limit and still follow the car's own charge limit. The integration does not write the Tesla charge-limit number.
 - **Clean handover at the end** — when the window closes, control returns to solar tracking immediately. If there's enough sun, charging continues seamlessly; if not, it stops straight away rather than serving out the 6-minute stop timer (which would mean paying peak rates for those minutes).
 
 A **Time Window Active** binary sensor and a `TIME_WINDOW` value on the Controller State sensor show when it's driving.
@@ -176,6 +181,7 @@ The integration creates these entities:
 - **Update Interval**, **Minimum Solar Generation**, **Stop Delay**, **Restart Cooldown** (number)
 - **Battery Priority Charge Limit** (number, only if battery configured)
 - **Battery Priority Style** (select, only if battery configured): `hard_cutoff` / `graduated`
+- **Time Window SOC Limit** (number, only if a vehicle battery sensor is configured)
 
 ### Sensors
 - **Target Amps**: Calculated target amperage
